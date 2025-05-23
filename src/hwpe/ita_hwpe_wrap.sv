@@ -65,16 +65,6 @@ module ita_hwpe_wrap
 
   hwpe_ctrl_intf_periph #(.ID_WIDTH(IdWidth)) periph (.clk(clk_i));
 
-  for(genvar i=0; i<MP; i++) begin: gen_tcdm_binding
-    assign tcdm_req_o  [i] = tcdm.req;
-    assign tcdm_add_o  [i] = tcdm.add + i*(MemDataWidth/8);
-    assign tcdm_wen_o  [i] = tcdm.wen;
-    assign tcdm_be_o   [i] = tcdm.be[i*(MemDataWidth/8)+:(MemDataWidth/8)];
-    assign tcdm_data_o [i] = tcdm.data[i*MemDataWidth+:MemDataWidth];
-  end
-  assign tcdm.gnt      = &(tcdm_gnt_i);
-  assign tcdm.r_valid  = &(tcdm_r_valid_i);
-  assign tcdm.r_data   = { >> {tcdm_r_data_i} };
   assign tcdm.r_user   = '0;
   assign tcdm.r_id     = '0;
   assign tcdm.r_opc    = '0;
@@ -104,5 +94,126 @@ module ita_hwpe_wrap
     .tcdm        (tcdm        ),
     .periph      (periph      )
   );
+
+  // Buffer to synchronize the tcdm_req_o and tcdm_gnt_i signals
+  localparam int unsigned BufferDepth = 8;
+
+  typedef struct packed {
+    logic [31:0]               add;
+    logic                      wen;
+    logic [MemDataWidth/8-1:0] be;
+    logic [MemDataWidth-1:0]   data;
+  } buf_req_t;
+
+  typedef struct packed {
+    logic [MemDataWidth-1:0]   data;
+  } buf_rsp_t;
+
+  logic [MP-1:0] buf_req_full, buf_req_empty;
+  logic [MP-1:0] buf_rsp_full, buf_rsp_empty;
+  logic [MP-1:0] buf_req_push, buf_req_pop;
+  logic [MP-1:0] buf_rsp_push,  buf_rsp_pop;
+  logic [MP-1:0][$clog2(BufferDepth):0] buf_req_usage, buf_rsp_usage;
+  buf_req_t [MP-1:0] buf_req_data_in;
+  buf_req_t [MP-1:0] buf_req_data_out;
+  buf_rsp_t [MP-1:0] buf_rsp_data_out;
+  buf_rsp_t [MP-1:0] buf_rsp_data_in;
+
+  logic all_not_full;
+
+  always_comb begin
+    // Default values
+    buf_req_push = '0;
+    buf_req_pop  = '0;
+    buf_rsp_push = '0;
+    buf_rsp_pop  = '0;
+
+    // Default values for tcdm signals
+    tcdm.gnt = 1'b0;
+    tcdm.r_valid = 1'b0;
+    tcdm.r_data  = '0;
+
+    all_not_full = 1'b1;
+
+    for (int i = 0; i < MP; i++) begin
+      if (buf_rsp_usage[i] == BufferDepth) begin
+        all_not_full = 1'b0;
+      end
+    end
+    if (tcdm.req && &(buf_req_full == 1'b0) && all_not_full) begin
+      tcdm.gnt = 1'b1;
+      for (int i = 0; i < MP; i++) begin
+        buf_req_push[i] = 1'b1;
+        buf_req_data_in[i].add  = tcdm.add + i*(MemDataWidth/8);
+        buf_req_data_in[i].wen  = tcdm.wen;
+        buf_req_data_in[i].be   = tcdm.be[i*(MemDataWidth/8)+:(MemDataWidth/8)];
+        buf_req_data_in[i].data = tcdm.data[i*MemDataWidth+:MemDataWidth];
+      end
+    end
+
+    for (int i = 0; i < MP; i++) begin
+      tcdm_req_o[i]  = !buf_req_empty[i];
+      tcdm_add_o[i]  = buf_req_data_out[i].add;
+      tcdm_wen_o[i]  = buf_req_data_out[i].wen;
+      tcdm_be_o[i]   = buf_req_data_out[i].be;
+      tcdm_data_o[i] = buf_req_data_out[i].data;
+      if (tcdm_req_o[i] && tcdm_gnt_i[i]) begin
+        buf_req_pop[i] = 1'b1;
+      end
+    end
+
+    for (int i = 0; i < MP; i++) begin
+      buf_rsp_push[i] = tcdm_r_valid_i[i];
+      buf_rsp_data_in[i].data = tcdm_r_data_i[i];
+    end
+
+    if (&(buf_rsp_empty == 1'b0)) begin
+      tcdm.r_valid = 1'b1;
+      tcdm.r_data  = { >> {buf_rsp_data_out} };
+      for (int i = 0; i < MP; i++) begin
+        buf_rsp_pop[i] = tcdm.r_ready;
+      end
+    end
+  end
+  
+  // generate fifo's with depth BufferDepth and one for each port
+  for (genvar i = 0; i < MP; i++) begin : gen_hwpe_tcdm_fifo
+    fifo_v3 #(
+      .DATA_WIDTH ( $bits(buf_req_t) ),
+      .DEPTH ( BufferDepth )
+    ) i_fifo_req (
+      .clk_i,
+      .rst_ni,
+      .flush_i (1'b0),
+      .testmode_i (1'b0),
+      .full_o (buf_req_full[i]),
+      .empty_o (buf_req_empty[i]),
+      .usage_o (buf_req_usage[i]),
+      // Onehot mask.
+      .data_i (buf_req_data_in[i]),
+      .push_i (buf_req_push[i]),
+      .data_o (buf_req_data_out[i]),
+      .pop_i  (buf_req_pop[i])
+    );
+
+    fifo_v3 #(
+      .DATA_WIDTH ( $bits(buf_rsp_t) ),
+      .DEPTH ( BufferDepth+1 )
+    ) i_fifo_rsp (
+      .clk_i,
+      .rst_ni,
+      .flush_i (1'b0),
+      .testmode_i (1'b0),
+      .full_o (buf_rsp_full[i]),
+      .empty_o (buf_rsp_empty[i]),
+      .usage_o (buf_rsp_usage[i]),
+      // Onehot mask.
+      .data_i (buf_rsp_data_in[i]),
+      .push_i (buf_rsp_push[i]),
+      .data_o (buf_rsp_data_out[i]),
+      .pop_i  (buf_rsp_pop[i])
+    );
+  end
+
 
 endmodule : ita_hwpe_wrap
