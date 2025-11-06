@@ -535,3 +535,45 @@ def error_MAEP(a: np.ndarray, b: np.ndarray):
     return 100 * np.mean(np.abs(a - b)) / max(
         np.abs(np.max(a)) + np.abs(np.min(a)),
         np.abs(np.max(b)) + np.abs(np.min(b)))
+
+def transform_weight(weight, tile_size=64):
+    """
+    Apply transpose + custom rearrangement to each 64x64 tile of weight.
+    
+    Args:
+        weight: np.ndarray of shape (H, E_ITA, P_ITA)
+        tile_size: int, default 64
+        
+    Returns:
+        weight_updated: np.ndarray of same shape as weight
+    """
+    H, E_ITA, P_ITA = weight.shape
+    assert E_ITA % tile_size == 0 and P_ITA % tile_size == 0, \
+        "E_ITA and P_ITA must be multiples of tile_size"
+    
+    weight_updated = np.zeros_like(weight)
+
+    def weird_tile_transform(tile_flat):
+        new_tile = np.zeros_like(tile_flat)
+        src_pos = 0
+        dst_pos = 0
+        while  dst_pos + 128 <= 4096:
+            chunk = tile_flat[src_pos:src_pos + 128]
+            new_tile[dst_pos:dst_pos+128] = chunk
+            dst_pos += 128
+            src_pos += 16
+        return new_tile
+    
+    for h in range(H):
+        for i in range(0, E_ITA, tile_size):
+            for j in range(0, P_ITA, tile_size):
+                tile = weight[h, i:i+tile_size, j:j+tile_size]
+                tile_t = tile.T
+                tile_flat = tile_t.flatten()
+                
+                transformed_flat = weird_tile_transform(tile_flat)
+                transformed_tile = transformed_flat.reshape(tile_size, tile_size)
+                
+                weight_updated[h, i:i+tile_size, j:j+tile_size] = transformed_tile.T
+    
+    return weight_updated

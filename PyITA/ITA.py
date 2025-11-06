@@ -27,7 +27,7 @@ from .gelu import gelu_requantize, i_gelu_requantized, get_i_gelu_constants, get
 from .util import (generate_matrix_mem, pack_8b_to_word, pack_array_8b_to_word, pack_hex_24b, pack_multihead_8b_to_word,
                    pack_multihead_24b_to_word, random_shuffled_tensor, requantize, split_matrix, to_hex, write_matrix,
                    write_matrix_mem, write_matrix_mem_hex, write_vector_mem_hex, get_almost_symmetric_scaling_factor,
-                   error_MAEP)
+                   error_MAEP, transform_weight)
 
 
 class Transformer:
@@ -150,6 +150,7 @@ class Transformer:
         #### Weight matrices ####
         self.Wq_in = random_shuffled_tensor((self.H, self.E, self.P), self.WI) if Wq is None else Wq
         self.Wq = np.pad(self.Wq_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.P_ITA - self.P)))
+        self.Wq_wrong = transform_weight(self.Wq, self.ITA_M)
 
         self.Wk_in = random_shuffled_tensor((self.H, self.E, self.P), self.WI) if Wk is None else Wk
         self.Wk = np.pad(self.Wk_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.P_ITA - self.P)))
@@ -509,6 +510,7 @@ class Transformer:
 
     def step1_Qp(self):
         self.Qp = np.matmul(self.Q, self.Wq, dtype = np.int32) + self.Bq_broadcast
+        self.Qp = np.matmul(self.Q, self.Wq_wrong, dtype = np.int32) + self.Bq_broadcast  # GISL: Wrong Wq for testing
         self.Qp = np.clip(self.Qp, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.Qp_requant = requantize(self.Qp, self.requant_eps_mult[0], self.requant_right_shift[0],
                                      self.requant_add[0])

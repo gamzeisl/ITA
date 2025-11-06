@@ -32,7 +32,7 @@ package ita_package;
   parameter  int unsigned MNumReadPorts  = N                                                                 ;
   parameter  int unsigned FifoDepth      = `ifdef ITA_OUTPUT_FIFO_DEPTH `ITA_OUTPUT_FIFO_DEPTH `else 12 `endif;
   localparam int unsigned SplitFactor    = 4                                                                 ;
-  parameter  int unsigned N_WRITE_EN     = `ifdef TARGET_ITA_HWPE 8 `else M `endif;
+  parameter  int unsigned N_WRITE_EN     = M;
 
   // Feedforward
   typedef enum bit [1:0] {Attention=0, Feedforward=1, Linear=2, SingleAttention=3} layer_e;
