@@ -150,21 +150,27 @@ class Transformer:
         #### Weight matrices ####
         self.Wq_in = random_shuffled_tensor((self.H, self.E, self.P), self.WI) if Wq is None else Wq
         self.Wq = np.pad(self.Wq_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.P_ITA - self.P)))
-        self.Wq_wrong = transform_weight(self.Wq, self.ITA_M)
+        self.Wq_wrong = transform_weight(self.Wq, self.ITA_M, preload=False)
 
         self.Wk_in = random_shuffled_tensor((self.H, self.E, self.P), self.WI) if Wk is None else Wk
         self.Wk = np.pad(self.Wk_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.P_ITA - self.P)))
+        self.Wk_wrong = transform_weight(self.Wk, self.ITA_M)
 
         self.Wv_in = random_shuffled_tensor((self.H, self.E, self.P), self.WI) if Wv is None else Wv
         self.Wv = np.pad(self.Wv_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.P_ITA - self.P)))
+        self.Wv_wrong = transform_weight(self.Wv, self.ITA_M)
 
         self.Wo_in = random_shuffled_tensor((self.H, self.P, self.E), self.WI) if Wo is None else Wo
         self.Wo = np.pad(self.Wo_in, ((0, 0), (0, self.P_ITA - self.P), (0, self.E_ITA - self.E)))
+        self.Wo_wrong = transform_weight(self.Wo, self.ITA_M)
 
         self.Wff_in = random_shuffled_tensor((1, self.E, self.F), self.WI) if Wff is None else Wff
         self.Wff = np.pad(self.Wff_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.F_ITA - self.F)))
+        self.Wff_wrong = transform_weight(self.Wff, self.ITA_M, preload=False)
+
         self.Wff2_in = random_shuffled_tensor((1, self.F, self.E), self.WI) if Wff2 is None else Wff2
         self.Wff2 = np.pad(self.Wff2_in, ((0, 0), (0, self.F_ITA - self.F), (0, self.E_ITA - self.E)))
+        self.Wff2_wrong = transform_weight(self.Wff2, self.ITA_M)
 
         #### Bias matrices ####
         if self.bias:
@@ -518,7 +524,7 @@ class Transformer:
         self.tiler_QK(self.Q, self.Wq, self.Bq, self.Qp_requant, "Q", "Wq", "Bq", "Qp")
 
     def step2_Kp(self):
-        self.Kp = np.matmul(self.K, self.Wk, dtype = np.int32) + self.Bk_broadcast
+        self.Kp = np.matmul(self.K, self.Wk_wrong, dtype = np.int32) + self.Bk_broadcast
         self.Kp = np.clip(self.Kp, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.Kp_requant = requantize(self.Kp, self.requant_eps_mult[1], self.requant_right_shift[1],
                                      self.requant_add[1])
@@ -526,7 +532,7 @@ class Transformer:
         self.tiler_QK(self.K, self.Wk, self.Bk, self.Kp_requant, "K", "Wk", "Bk", "Kp")
 
     def step3_Vp(self):
-        self.Vp = np.matmul(self.V, self.Wv, dtype = np.int32) + self.Bv_broadcast
+        self.Vp = np.matmul(self.V, self.Wv_wrong, dtype = np.int32) + self.Bv_broadcast
         self.Vp = np.clip(self.Vp, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.Vp_requant = requantize(self.Vp, self.requant_eps_mult[2], self.requant_right_shift[2],
                                      self.requant_add[2])
@@ -588,7 +594,7 @@ class Transformer:
         return postactivation
 
     def step6_O(self):
-        self.Out_soft = np.matmul(self.O_soft_requant, self.Wo, dtype = np.int32) + self.Bo_broadcast
+        self.Out_soft = np.matmul(self.O_soft_requant, self.Wo_wrong, dtype = np.int32) + self.Bo_broadcast
         self.Out_soft = np.clip(self.Out_soft, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.Out_soft_requant = requantize(self.Out_soft, self.requant_eps_mult[5], self.requant_right_shift[5],
                                            self.requant_add[5])
@@ -596,7 +602,7 @@ class Transformer:
                        "Out_soft")
 
     def feedforward_layer(self):
-        self.FFp = np.matmul(self.FF, self.Wff, dtype = np.int32) + self.Bff_broadcast
+        self.FFp = np.matmul(self.FF, self.Wff_wrong, dtype = np.int32) + self.Bff_broadcast
         self.FFp = np.clip(self.FFp, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.FFp_requant = requantize(self.FFp, self.requant_eps_mult_ffn[0], self.requant_right_shift_ffn[0],
                                       self.requant_add_ffn[0])
@@ -604,7 +610,7 @@ class Transformer:
 
         self.tiler_QK(self.FF, self.Wff, self.Bff, self.FFp_requant, "FF", "Wff", "Bff", "FFp")
 
-        self.FF2p = np.matmul(self.FFp_requant, self.Wff2, dtype = np.int32) + self.Bff2_broadcast
+        self.FF2p = np.matmul(self.FFp_requant, self.Wff2_wrong, dtype = np.int32) + self.Bff2_broadcast
         self.FF2p = np.clip(self.FF2p, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.FF2p_requant = requantize(self.FF2p, self.requant_eps_mult_ffn[1], self.requant_right_shift_ffn[1],
                                        self.requant_add_ffn[1])

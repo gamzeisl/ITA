@@ -536,24 +536,24 @@ def error_MAEP(a: np.ndarray, b: np.ndarray):
         np.abs(np.max(a)) + np.abs(np.min(a)),
         np.abs(np.max(b)) + np.abs(np.min(b)))
 
-def transform_weight(weight, tile_size=64):
+def transform_weight(weight, tile_size=64, preload=True):
     """
     Apply transpose + custom rearrangement to each 64x64 tile of weight.
     
     Args:
-        weight: np.ndarray of shape (H, E_ITA, P_ITA)
+        weight: np.ndarray of shape (H, E_d, P_d)
         tile_size: int, default 64
         
     Returns:
         weight_updated: np.ndarray of same shape as weight
     """
-    H, E_ITA, P_ITA = weight.shape
-    assert E_ITA % tile_size == 0 and P_ITA % tile_size == 0, \
-        "E_ITA and P_ITA must be multiples of tile_size"
+    H, E_d, P_d = weight.shape
+    assert E_d % tile_size == 0 and P_d % tile_size == 0, \
+        "E_d and P_d must be multiples of tile_size"
     
     weight_updated = np.zeros_like(weight)
 
-    def weird_tile_transform(tile_flat):
+    def weird_tile_transform(tile_flat, tile_preload):
         new_tile = np.zeros_like(tile_flat)
         src_pos = 0
         dst_pos = 0
@@ -561,19 +561,34 @@ def transform_weight(weight, tile_size=64):
             chunk = tile_flat[src_pos:src_pos + 128]
             new_tile[dst_pos:dst_pos+128] = chunk
             dst_pos += 128
-            src_pos += 16
+            if tile_preload and dst_pos == 1024:
+                src_pos = 1024
+            else:
+                src_pos += 16
         return new_tile
     
     for h in range(H):
-        for i in range(0, E_ITA, tile_size):
-            for j in range(0, P_ITA, tile_size):
-                tile = weight[h, i:i+tile_size, j:j+tile_size]
+        for ei in range(0, E_d, tile_size):
+            for pj in range(0, P_d, tile_size):
+                if preload:
+                    tile_preload = 1
+                else:
+                    if ei == 0 and pj == 0:
+                        tile_preload = 0
+                    else:
+                        tile_preload = 1
+                # 1) get 64x64 tile
+                tile = weight[h, ei:ei + tile_size, pj:pj + tile_size]
+                # 2) transpose
                 tile_t = tile.T
-                tile_flat = tile_t.flatten()
-                
-                transformed_flat = weird_tile_transform(tile_flat)
-                transformed_tile = transformed_flat.reshape(tile_size, tile_size)
-                
-                weight_updated[h, i:i+tile_size, j:j+tile_size] = transformed_tile.T
+                # 3) flatten -> 4096
+                tile_flat = tile_t.reshape(-1)
+                # 4) apply weird transform
+                transformed_flat = weird_tile_transform(tile_flat, tile_preload)
+                # 5) reshape back to 64x64, inverse transpose to original orientation
+                transformed_tile = transformed_flat.reshape(tile_size, tile_size).T
+                # 6) put back
+                weight_updated[h, ei:ei + tile_size, pj:pj + tile_size] = transformed_tile
+
     
     return weight_updated
