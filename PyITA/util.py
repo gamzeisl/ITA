@@ -541,13 +541,24 @@ def transform_weight(weight, tile_size=64, preload=True):
     Apply transpose + custom rearrangement to each 64x64 tile of weight.
     
     Args:
-        weight: np.ndarray of shape (H, E_d, P_d)
+        weight: np.ndarray of shape (H, E_d, P_d) or (E_d, P_d)
         tile_size: int, default 64
         
     Returns:
         weight_updated: np.ndarray of same shape as weight
     """
-    H, E_d, P_d = weight.shape
+    # Handle both 2D and 3D inputs
+    if weight.ndim == 3:
+        H, E_d, P_d = weight.shape
+        weight_out_shape = (H, E_d, P_d)
+    elif weight.ndim == 2:
+        E_d, P_d = weight.shape
+        H = 1
+        weight = weight[np.newaxis, :, :]  # add dummy H dimension
+        weight_out_shape = (E_d, P_d)
+    else:
+        raise ValueError("weight must be 2D or 3D array")
+
     assert E_d % tile_size == 0 and P_d % tile_size == 0, \
         "E_d and P_d must be multiples of tile_size"
     
@@ -557,7 +568,7 @@ def transform_weight(weight, tile_size=64, preload=True):
         new_tile = np.zeros_like(tile_flat)
         src_pos = 0
         dst_pos = 0
-        while  dst_pos + 128 <= 4096:
+        while dst_pos + 128 <= 4096:
             chunk = tile_flat[src_pos:src_pos + 128]
             new_tile[dst_pos:dst_pos+128] = chunk
             dst_pos += 128
@@ -566,29 +577,19 @@ def transform_weight(weight, tile_size=64, preload=True):
             else:
                 src_pos += 16
         return new_tile
-    
+
     for h in range(H):
         for ei in range(0, E_d, tile_size):
             for pj in range(0, P_d, tile_size):
-                if preload:
-                    tile_preload = 1
-                else:
-                    if ei == 0 and pj == 0:
-                        tile_preload = 0
-                    else:
-                        tile_preload = 1
-                # 1) get 64x64 tile
+                tile_preload = 1 if preload or (ei != 0 or pj != 0) else 0
                 tile = weight[h, ei:ei + tile_size, pj:pj + tile_size]
-                # 2) transpose
                 tile_t = tile.T
-                # 3) flatten -> 4096
                 tile_flat = tile_t.reshape(-1)
-                # 4) apply weird transform
                 transformed_flat = weird_tile_transform(tile_flat, tile_preload)
-                # 5) reshape back to 64x64, inverse transpose to original orientation
                 transformed_tile = transformed_flat.reshape(tile_size, tile_size).T
-                # 6) put back
                 weight_updated[h, ei:ei + tile_size, pj:pj + tile_size] = transformed_tile
 
-    
-    return weight_updated
+    # Remove dummy H dimension if input was 2D
+    if weight.ndim == 3 and weight_out_shape == (E_d, P_d):
+        return weight_updated[0]
+    return weight_updated.reshape(weight_out_shape)

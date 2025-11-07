@@ -139,6 +139,7 @@ class Transformer:
 
         self.V_in = random_shuffled_tensor((self.S, self.E), self.WI) if V is None else V
         self.V = np.pad(self.V_in, ((0, self.S_ITA - self.S), (0, self.E_ITA - self.E)))
+        self.V_wrong = transform_weight(self.V.T, self.ITA_M).T
 
         # WIESEP: K is the same as V because we do cross-attention
         self.K_in = self.V_in
@@ -158,7 +159,6 @@ class Transformer:
 
         self.Wv_in = random_shuffled_tensor((self.H, self.E, self.P), self.WI) if Wv is None else Wv
         self.Wv = np.pad(self.Wv_in, ((0, 0), (0, self.E_ITA - self.E), (0, self.P_ITA - self.P)))
-        self.Wv_wrong = transform_weight(self.Wv, self.ITA_M)
 
         self.Wo_in = random_shuffled_tensor((self.H, self.P, self.E), self.WI) if Wo is None else Wo
         self.Wo = np.pad(self.Wo_in, ((0, 0), (0, self.P_ITA - self.P), (0, self.E_ITA - self.E)))
@@ -532,7 +532,7 @@ class Transformer:
         self.tiler_QK(self.K, self.Wk, self.Bk, self.Kp_requant, "K", "Wk", "Bk", "Kp")
 
     def step3_Vp(self):
-        self.Vp = np.matmul(self.V, self.Wv_wrong, dtype = np.int32) + self.Bv_broadcast
+        self.Vp = np.matmul(self.V_wrong, self.Wv, dtype = np.int32) + self.Bv_broadcast
         self.Vp = np.clip(self.Vp, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.Vp_requant = requantize(self.Vp, self.requant_eps_mult[2], self.requant_right_shift[2],
                                      self.requant_add[2])
@@ -541,8 +541,9 @@ class Transformer:
         self.tiler_V(self.V, self.Wv, self.Bv, self.Vp_requant, "V", "Wv", "Bv", "Vp")
 
     def step4_QK(self, no_partial_softmax):
+        self.Kp_requant_wrong = np.transpose(transform_weight(np.transpose(self.Kp_requant, (0, 2, 1)), self.ITA_M), (0, 2, 1))
         self.A = np.array(
-            [np.matmul(self.Qp_requant[i], np.transpose(self.Kp_requant[i]), dtype = np.int32) for i in range(self.H)])
+            [np.matmul(self.Qp_requant[i], np.transpose(self.Kp_requant_wrong[i]), dtype = np.int32) for i in range(self.H)])
         self.A = np.clip(self.A, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
         self.A_requant = requantize(self.A, self.requant_eps_mult[3], self.requant_right_shift[3], self.requant_add[3])
         self.soft(no_partial_softmax)
@@ -564,8 +565,9 @@ class Transformer:
             write_matrix(A_save, f"A_soft_{h}", self.paths["standalone"])
 
     def step5_AV(self):
+        self.Vp_requant_wrong = transform_weight(self.Vp_requant, self.ITA_M)
         self.O_soft = np.array([
-            np.matmul(self.A_partial_softmax[i].astype(np.uint8), self.Vp_requant[i], dtype = np.int32)
+            np.matmul(self.A_partial_softmax[i].astype(np.uint8), self.Vp_requant_wrong[i], dtype = np.int32)
             for i in range(self.H)
         ])
         self.O_soft = np.clip(self.O_soft, -2**(self.WO - 1), 2**(self.WO - 1) - 1)
